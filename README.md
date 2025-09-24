@@ -1,6 +1,6 @@
 # Zero Trust Demo API (Flask + JWT + ABAC + Refresh Token Rotation)
 
-This project is a **Zero Trust authentication and authorization demo API** built with Python Flask.
+This project is a **Zero Trust authentication and authorization demo API** built with Python (Flask).
 
 It demonstrates modern security practices:
 
