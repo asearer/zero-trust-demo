@@ -78,7 +78,7 @@ def test_login_nonexistent_user(client):
 
 def test_login_empty_fields(client):
     res = client.post("/login", json={})
-    assert res.status_code == 401
+    assert res.status_code == 400
 
 
 # -----------------------

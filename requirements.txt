@@ -1,5 +1,7 @@
-Flask>=2.3.0,<3.0
-PyJWT>=2.8.0,<3.0
-pytest>=7.0,<8.0
+Flask==3.0.0
+PyJWT==2.8.0
+pytest==7.4.3
+pydantic
+python-dotenv
 pytest-cov>=4.0.0,<5.0
 freezegun>=1.2.2  # for time mocking in ABAC tests
