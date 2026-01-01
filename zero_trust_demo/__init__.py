@@ -5,4 +5,6 @@ Makes zero_trust_demo a package.
 Exposes the Flask app for easy imports.
 """
 
-from .app import app, USER_DB, generate_totp
+from .app import USER_DB as USER_DB
+from .app import app as app
+from .app import generate_totp as generate_totp

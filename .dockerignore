@@ -1,0 +1,15 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+.git
+.gitignore
+.pytest_cache/
+tests/function_test_coverage.png
+tests/class_test_coverage.png
+tests/files_test_coverage.png

@@ -4,4 +4,6 @@ pytest==7.4.3
 pydantic
 python-dotenv
 pytest-cov>=4.0.0,<5.0
-freezegun>=1.2.2  # for time mocking in ABAC tests
+freezegun>=1.2.2
+gunicorn>=21.2.0
+flask-talisman>=1.1.0

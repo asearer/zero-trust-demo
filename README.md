@@ -55,12 +55,50 @@ pip install -r requirements.txt
 
 ---
 
+### 4. Docker (Optional)
+
+Build and run with Docker:
+
+```bash
+docker-compose up --build
+```
+
+The API will be available at `http://localhost:5000`.
+
+---
+
 ## ▶️ Running the API
+
+### Development Mode
 
 Start the Flask app:
 
 ```bash
 python app.py
+```
+
+### Production Mode
+
+Use Gunicorn (included in requirements):
+
+```bash
+gunicorn --bind 0.0.0.0:5000 zero_trust_demo.app:app
+```
+
+---
+
+## 🛠 Development & Linting
+
+This project uses `ruff` for linting and formatting.
+
+Check code:
+```bash
+ruff check .
+```
+
+Format code:
+```bash
+ruff format .
 ```
 
 The API will be available at:
