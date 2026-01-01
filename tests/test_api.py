@@ -146,12 +146,14 @@ def test_user_write_denied(client):
 def test_missing_authorization(client):
     res = client.post("/resource", json={"action": "read", "resource": "data"})
     assert res.status_code == 401
+    assert "Missing or invalid Authorization header" in res.get_json()["error"]
 
 
 def test_malformed_jwt(client):
     res = client.post("/resource", json={"action": "read", "resource": "data"},
                       headers={"Authorization": "Bearer bad.token.value"})
     assert res.status_code == 401
+    assert "Invalid token" in res.get_json()["error"]
 
 
 # -----------------------
@@ -202,6 +204,7 @@ def test_expired_access_token(client):
     res = client.post("/resource", json={"action": "read", "resource": "data"},
                       headers={"Authorization": f"Bearer {expired_token}"})
     assert res.status_code == 401
+    assert "Token expired" in res.get_json()["error"]
 
 
 # -----------------------

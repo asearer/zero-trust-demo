@@ -32,10 +32,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ---------------------------
+# Custom Exceptions
+# ---------------------------
+class AppError(Exception):
+    """Base exception for application errors."""
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+class AuthenticationError(AppError):
+    """Raised when authentication fails."""
+    def __init__(self, message: str = "Authentication failed"):
+        super().__init__(message, status_code=401)
+
+class AuthorizationError(AppError):
+    """Raised when authorization fails."""
+    def __init__(self, message: str = "Access denied"):
+        super().__init__(message, status_code=403)
+
 app = Flask(__name__)
 
 # Configuration Constants
-SECRET_KEY = os.getenv("SECRET_KEY", "SuperSecureSigningKey123")  # Fallback only for demo
+# Configuration Constants
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY or SECRET_KEY == "SuperSecureSigningKey123":
+    logger.warning("Using default or weak SECRET_KEY. Do not do this in production!")
+    if not SECRET_KEY:
+         SECRET_KEY = "SuperSecureSigningKey123" # Fallback for now to not break immediate run if env missing
+
 ACCESS_TOKEN_EXPIRE_SECONDS = int(os.getenv("ACCESS_TOKEN_EXPIRE_SECONDS", 300))
 REFRESH_TOKEN_EXPIRE_HOURS = int(os.getenv("REFRESH_TOKEN_EXPIRE_HOURS", 1))
 
@@ -143,20 +169,23 @@ def rotate_refresh_token(old_token: str) -> Optional[str]:
     
     if record["expires_at"] < datetime.now(timezone.utc):
         del REFRESH_TOKENS[old_token]  # Cleanup expired
-        return None
+        raise AuthenticationError("Refresh token expired")
 
     username = record["username"]
     del REFRESH_TOKENS[old_token]  # Revoke old token
     return issue_refresh_token(username)
 
 
-def verify_jwt(token: str) -> Optional[dict]:
+def verify_jwt(token: str) -> dict:
     """Verifies and decodes the JWT access token."""
     try:
         return jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
+    except jwt.ExpiredSignatureError:
+        logger.warning("JWT Verification Failed: Token expired")
+        raise AuthenticationError("Token expired")
+    except jwt.InvalidTokenError as e:
         logger.warning(f"JWT Verification Failed: {e}")
-        return None
+        raise AuthenticationError("Invalid token")
 
 
 def abac_authorize(claims: dict, action: str, resource: str) -> bool:
@@ -204,7 +233,18 @@ def abac_authorize(claims: dict, action: str, resource: str) -> bool:
 
 @app.errorhandler(ValidationError)
 def handle_validation_error(e):
+    logger.warning(f"Validation Error: {e.errors()}")
     return jsonify({"error": "Validation Error", "details": e.errors()}), 400
+
+@app.errorhandler(AppError)
+def handle_app_error(e):
+    logger.warning(f"AppError: {e.message}")
+    return jsonify({"error": e.message}), e.status_code
+
+@app.errorhandler(Exception)
+def handle_generic_error(e):
+    logger.exception("Unexpected Internal Error")
+    return jsonify({"error": "Internal Server Error"}), 500
 
 @app.route("/login", methods=["POST"])
 def login():
