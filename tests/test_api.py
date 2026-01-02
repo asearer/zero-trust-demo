@@ -11,22 +11,35 @@ Covers:
 - Refresh token rotation
 - Logout and revoked token behavior
 - Edge cases and fuzz testing
+- Rate limiting
 """
 
 import random
 import string
 from datetime import datetime, timezone
+import time
 
 import jwt
 import pytest
 from freezegun import freeze_time
 
-from zero_trust_demo import USER_DB, app, generate_totp
+from zero_trust_demo import app
+from zero_trust_demo.app import USER_DB
+from zero_trust_demo.security import generate_totp
 
 
 @pytest.fixture
 def client():
     app.config["TESTING"] = True
+    # Reset Limiter storage for tests
+    from zero_trust_demo.app import limiter
+    
+    # We need to ensure limits aren't persisted between tests in a way that breaks them
+    # For memory storage, this should be fine per process, but explicitly:
+    with app.app_context():
+         if hasattr(limiter, "_storage"):
+             limiter._storage.reset()
+             
     return app.test_client()
 
 
@@ -272,6 +285,37 @@ def test_expired_access_token(client):
     assert res.status_code == 401
     assert "Token expired" in res.get_json()["error"]
 
+
+# -----------------------
+# RATE LIMITING
+# -----------------------
+def test_rate_limiting_login(client):
+    """Verify that login is rate limited."""
+    # Attempt more than 5 logins
+    for _ in range(5):
+        client.post(
+            "/login",
+            json={
+                "username": "alice",
+                "password": "SuperSecret123",
+                "mfa_code": get_valid_mfa("alice"),
+                "device": "laptop-001",
+            },
+        )
+    
+    # 6th attempt should fail
+    res = client.post(
+        "/login",
+        json={
+            "username": "alice",
+            "password": "SuperSecret123",
+            "mfa_code": get_valid_mfa("alice"),
+            "device": "laptop-001",
+        },
+    )
+    
+    assert res.status_code == 429
+    assert "Too Many Requests" in res.get_json()["error"]
 
 # -----------------------
 # FUZZ & EDGE CASES

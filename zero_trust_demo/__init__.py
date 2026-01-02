@@ -7,4 +7,4 @@ Exposes the Flask app for easy imports.
 
 from .app import USER_DB as USER_DB
 from .app import app as app
-from .app import generate_totp as generate_totp
+from .security import generate_totp as generate_totp

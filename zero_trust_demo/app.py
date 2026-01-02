@@ -5,12 +5,9 @@ Zero Trust Demo API using Flask, JWT, ABAC, MFA, and refresh token rotation.
 Refactored for robustness, security, and industry standards.
 """
 
-import hashlib
-import hmac
 import logging
 import os
 import secrets
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
@@ -18,7 +15,22 @@ import jwt
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from flask_talisman import Talisman
-from pydantic import BaseModel, Field, ValidationError
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from pydantic import ValidationError
+
+# Import refactored modules
+from zero_trust_demo.schemas import (
+    LoginRequest,
+    RefreshRequest,
+    LogoutRequest,
+    ResourceAccessRequest,
+)
+from zero_trust_demo.security import (
+    hash_password,
+    verify_password,
+    verify_totp,
+)
 
 # ---------------------------
 # Setup & Configuration
@@ -67,13 +79,19 @@ app = Flask(__name__)
 force_https = os.getenv("FLASK_ENV") == "production"
 talisman = Talisman(app, force_https=force_https, content_security_policy=None)
 
-# Configuration Constants
+# Rate Limiting
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri="memory://",
+)
+
 # Configuration Constants
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY or SECRET_KEY == "SuperSecureSigningKey123":
     logger.warning("Using default or weak SECRET_KEY. Do not do this in production!")
     if not SECRET_KEY:
-        # Fallback for now to not break immediate run if env missing
         SECRET_KEY = "SuperSecureSigningKey123"
 
 ACCESS_TOKEN_EXPIRE_SECONDS = int(os.getenv("ACCESS_TOKEN_EXPIRE_SECONDS", 300))
@@ -85,14 +103,15 @@ REFRESH_TOKENS: Dict[str, Dict] = {}
 # ---------------------------
 # Simulated User Database
 # ---------------------------
+# Note: Passwords are now hashed with PBKDF2 (via werkzeug/security.py)
 USER_DB = {
     "alice": {
-        "password_hash": hashlib.sha256(b"SuperSecret123").hexdigest(),
+        "password_hash": hash_password("SuperSecret123"),
         "mfa_secret": "JBSWY3DPEHPK3PXP",
         "role": "admin",
     },
     "bob": {
-        "password_hash": hashlib.sha256(b"Password123").hexdigest(),
+        "password_hash": hash_password("Password123"),
         "mfa_secret": "KZXW6YPBOI======",
         "role": "user",
     },
@@ -100,65 +119,8 @@ USER_DB = {
 
 
 # ---------------------------
-# Pydantic Models
-# ---------------------------
-class LoginRequest(BaseModel):
-    username: str = Field(..., min_length=1)
-    password: str = Field(..., min_length=1)
-    mfa_code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
-    device: Optional[str] = "unknown"
-
-
-class RefreshRequest(BaseModel):
-    refresh_token: str = Field(..., min_length=10)
-    device: Optional[str] = "unknown"
-
-
-class LogoutRequest(BaseModel):
-    refresh_token: str = Field(..., min_length=10)
-
-
-class ResourceAccessRequest(BaseModel):
-    action: str = Field(..., pattern=r"^(read|write|delete)$")
-    resource: str = Field(..., min_length=1)
-
-
-# ---------------------------
 # Helper Functions
 # ---------------------------
-def verify_password(username: str, password: str) -> bool:
-    """Verifies if the provided password matches the stored hash."""
-    if username not in USER_DB:
-        return False
-    stored_hash = USER_DB[username]["password_hash"]
-    input_hash = hashlib.sha256(password.encode()).hexdigest()
-    # Use constant time comparison to prevent timing attacks
-    # (though hash comparison is fast)
-    return hmac.compare_digest(stored_hash, input_hash)
-
-
-def generate_totp(secret: str, interval: int = 30) -> str:
-    """Generates a Time-based One-Time Password (TOTP)."""
-    timestep = int(time.time() // interval)
-    key = secret.encode()
-    msg = timestep.to_bytes(8, "big")
-    hmac_hash = hmac.new(key, msg, hashlib.sha1).digest()
-    offset = hmac_hash[-1] & 0x0F
-    code = (
-        int.from_bytes(hmac_hash[offset : offset + 4], "big") & 0x7FFFFFFF
-    ) % 1000000
-    return str(code).zfill(6)
-
-
-def verify_totp(username: str, code: str) -> bool:
-    """Verifies the TOTP code for a given user."""
-    if username not in USER_DB:
-        return False
-    # In a real app, allow for clock skew (previous/next window)
-    expected_code = generate_totp(USER_DB[username]["mfa_secret"])
-    return hmac.compare_digest(code, expected_code)
-
-
 def issue_access_token(username: str, role: str, context: dict) -> str:
     """Issues a short-lived JWT access token."""
     now = datetime.now(timezone.utc)
@@ -230,9 +192,7 @@ def abac_authorize(claims: dict, action: str, resource: str) -> bool:
     )
 
     # Policy 1: Admin can access anytime, anywhere
-    # (simulating broad access, maybe restrict later)
     if role == "admin":
-        # Example constraint: Admin only between 6 AM and 10 PM UTC
         allowed = 6 <= current_hour <= 22
         if not allowed:
             logger.info(
@@ -242,9 +202,6 @@ def abac_authorize(claims: dict, action: str, resource: str) -> bool:
 
     # Policy 2: Regular User constraints
     if role == "user":
-        # Strict context-aware check
-        # Must be: 'read' action, 'data' resource,
-        # corporate device (laptop*), corporate IP (10.0.0.*)
         is_read_data = action == "read" and resource == "data"
         is_corp_device = device.startswith("laptop")
         is_corp_ip = ip.startswith("10.0.0.")
@@ -280,15 +237,21 @@ def handle_app_error(e):
 
 @app.errorhandler(Exception)
 def handle_generic_error(e):
+    # Flask-Limiter raised 429 exceptions are processed here by default if not handled specifically,
+    # but let's verify if we want specific handling.
+    if hasattr(e, "code") and e.code == 429:
+        logger.warning(f"Rate Limit Exceeded: {e}")
+        return jsonify({"error": "Too Many Requests"}), 429
+    
     logger.exception("Unexpected Internal Error")
     return jsonify({"error": "Internal Server Error"}), 500
 
 
 @app.route("/login", methods=["POST"])
+@limiter.limit("5 per minute")
 def login():
     """Authenticates user with Password and MFA."""
     try:
-        # Validate Request Body
         body = LoginRequest(**request.json)
     except ValidationError as e:
         return handle_validation_error(e)
@@ -296,19 +259,20 @@ def login():
     context = {"ip": request.remote_addr, "device": body.device}
 
     # 1. Verify Password
-    if not verify_password(body.username, body.password):
+    user = USER_DB.get(body.username)
+    if not user or not verify_password(user["password_hash"], body.password):
         logger.warning(
             f"Failed login attempt for user: {body.username} (Invalid Credentials)"
         )
         return jsonify({"error": "Invalid credentials"}), 401
 
     # 2. Verify MFA
-    if not verify_totp(body.username, body.mfa_code):
+    if not verify_totp(user["mfa_secret"], body.mfa_code):
         logger.warning(f"Failed login attempt for user: {body.username} (Invalid MFA)")
         return jsonify({"error": "Invalid MFA"}), 401
 
     # 3. Issue Tokens
-    role = USER_DB[body.username]["role"]
+    role = user["role"]
     access_token = issue_access_token(body.username, role, context)
     refresh_token = issue_refresh_token(body.username)
 
@@ -317,6 +281,7 @@ def login():
 
 
 @app.route("/refresh", methods=["POST"])
+@limiter.limit("10 per hour")
 def refresh():
     """Rotates the refresh token and issues a new access token."""
     try:
@@ -331,9 +296,6 @@ def refresh():
         logger.warning("Failed refresh attempt: Invalid or expired token.")
         return jsonify({"error": "Invalid or expired refresh token"}), 401
 
-    # Retrieve username from new token record (since old one is gone)
-    # Note: In a real DB, we'd look up the user by the new token or a session ID.
-    # Here, we need to find who owns this new token.
     username = REFRESH_TOKENS[new_refresh_token]["username"]
     role = USER_DB[username]["role"]
 
@@ -400,6 +362,5 @@ def access_resource():
 
 
 if __name__ == "__main__":
-    # In production, use gunicorn or similar
     logger.info("Starting Zero Trust Demo API...")
     app.run(debug=True, port=5000)
